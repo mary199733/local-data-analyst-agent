@@ -96,6 +96,47 @@ def shrink(result):
     if len(text) > MAX_CHARS:
         text = text[:MAX_CHARS] + "\n...[truncated, the result was too large]"
     return text
+# ---------------------------------------------------------------- self-correction
+MAX_TRIES = 3
+
+RETRY_PROMPT = """The code you wrote failed.
+
+Here is the code:
+{code}
+
+Here is the error:
+{error}
+
+Rewrite it so it works. Same rules as before: put the findings in a dictionary
+called `result`, keep every value small, output only a Python code block."""
+
+
+def ask_for_retry(code, error):
+    reply = ollama.chat(
+        model=MODEL,
+        messages=[{"role": "user",
+                   "content": RETRY_PROMPT.format(code=code, error=error)}],
+    )
+    return reply["message"]["content"]
+
+
+def get_working_result(schema, df):
+    code = extract_code(ask_for_code(schema))
+
+    for attempt in range(1, MAX_TRIES + 1):
+        print(f"\n--- attempt {attempt} of {MAX_TRIES} ---")
+        print(code)
+        try:
+            result = run_code(code, df)
+            print(f"\n[ok] ran successfully on attempt {attempt}")
+            return result
+        except Exception as e:
+            error = f"{type(e).__name__}: {e}"
+            print(f"\n[failed] {error}")
+            if attempt == MAX_TRIES:
+                raise RuntimeError(f"gave up after {MAX_TRIES} attempts")
+            print("[retrying] sending the error back to the model...")
+            code = extract_code(ask_for_retry(code, error))
 
 
 # ---------------------------------------------------------------- step 4
@@ -127,13 +168,7 @@ def main():
     print("--- what Python sees -------------------------------------")
     print(schema)
 
-    print("\n--- asking the model for code ----------------------------")
-    raw = ask_for_code(schema)
-    code = extract_code(raw)
-    print(code)
-
-    print("\n--- running it -------------------------------------------")
-    result = run_code(code, df)
+    result = get_working_result(schema, df)
     findings = shrink(result)
     print(findings)
 
